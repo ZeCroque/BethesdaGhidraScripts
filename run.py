@@ -8,12 +8,15 @@ run the headless Ghidra import, open Ghidra, etc.
 Usage:
   python run.py            Interactive menu
   python run.py setup      Install prerequisites + tools (non-interactive)
-  python run.py build      Generate scripts + headless import (non-interactive)
-  python run.py all        Full pipeline: setup + build + open Ghidra
+  python run.py status     Show each runtime database independently
+  python run.py build      Generate scripts + import every runtime
+  python run.py add ...    Add an executable and import its runtime
+  python run.py all        Setup + import every runtime + open Ghidra
 """
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +27,7 @@ import zipfile
 from pathlib import Path
 
 REPO_DIR      = Path(__file__).resolve().parent
-EXES_ROOT     = REPO_DIR / "exes"
+RUNTIMES_DIR  = REPO_DIR / "runtimes"
 SCRIPTS_DIR   = REPO_DIR / "scripts"
 TOOLS_DIR     = REPO_DIR / "tools"
 GHIDRA_DIR    = TOOLS_DIR / "ghidra"
@@ -32,9 +35,7 @@ STEAMLESS_DIR = TOOLS_DIR / "Steamless"
 LLVM_DIR      = TOOLS_DIR / "llvm"
 
 GHIDRA_SCRIPTS_DIR  = REPO_DIR / "ghidrascripts"
-PROJECTS_DIR        = REPO_DIR / "ghidraprojects"
 GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
-STATE_FILE          = REPO_DIR / ".last_run_state"
 
 GHIDRA_RELEASES_URL    = "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest"
 STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases/latest"
@@ -104,12 +105,38 @@ def _clang_version():
         return None
 
 
-def _discover_exes():
-    """Return list of (game, version, exe_path) tuples."""
+def _runtime_dir(runtime):
+    return RUNTIMES_DIR / runtime
+
+
+def _runtime_exes_dir(runtime):
+    return _runtime_dir(runtime) / "exes"
+
+
+def _runtime_projects_dir(runtime):
+    return _runtime_dir(runtime) / "ghidraprojects"
+
+
+def _runtime_state_file(runtime):
+    return _runtime_dir(runtime) / ".last_run_state"
+
+
+def _discover_runtimes():
+    if not RUNTIMES_DIR.is_dir():
+        return []
+    return sorted(
+        path.name for path in RUNTIMES_DIR.iterdir()
+        if path.is_dir() and _discover_exes(path.name)
+    )
+
+
+def _discover_exes(runtime):
+    """Return list of (game, variant, exe_path) tuples for one runtime."""
     found = []
-    if not EXES_ROOT.is_dir():
+    exes_root = _runtime_exes_dir(runtime)
+    if not exes_root.is_dir():
         return found
-    for game_dir in sorted(EXES_ROOT.iterdir()):
+    for game_dir in sorted(exes_root.iterdir()):
         if not game_dir.is_dir():
             continue
         for ver_dir in sorted(game_dir.iterdir()):
@@ -122,12 +149,17 @@ def _discover_exes():
     return found
 
 
-def _discover_games():
-    return {g for g, _, _ in _discover_exes()}
+def _discover_games(runtime=None):
+    runtimes = [runtime] if runtime else _discover_runtimes()
+    return {
+        game for name in runtimes
+        for game, _, _ in _discover_exes(name)
+    }
 
 
-def _project_exists():
-    gpr = PROJECTS_DIR / GHIDRA_PROJECT_NAME / f"{GHIDRA_PROJECT_NAME}.gpr"
+def _project_exists(runtime):
+    gpr = (_runtime_projects_dir(runtime) / GHIDRA_PROJECT_NAME /
+           f"{GHIDRA_PROJECT_NAME}.gpr")
     return gpr.is_file()
 
 
@@ -154,29 +186,33 @@ def _get_submodule_hashes():
     return hashes
 
 
-def _get_exe_fingerprints():
+def _get_exe_fingerprints(runtime):
     fps = {}
-    if EXES_ROOT.is_dir():
-        for exe in EXES_ROOT.rglob("*.exe"):
+    exes_root = _runtime_exes_dir(runtime)
+    if exes_root.is_dir():
+        for exe in exes_root.rglob("*.exe"):
             if "unpacked" in exe.name:
                 continue
-            rel = exe.relative_to(EXES_ROOT).as_posix()
+            rel = exe.relative_to(exes_root).as_posix()
             st = exe.stat()
             fps[rel] = {"mtime": st.st_mtime, "size": st.st_size}
     return fps
 
 
-def _load_state():
-    if STATE_FILE.is_file():
+def _load_state(runtime):
+    state_file = _runtime_state_file(runtime)
+    if state_file.is_file():
         try:
-            return json.loads(STATE_FILE.read_text())
+            return json.loads(state_file.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     return {}
 
 
-def _save_state(submodules, exes):
-    STATE_FILE.write_text(json.dumps(
+def _save_state(runtime, submodules, exes):
+    state_file = _runtime_state_file(runtime)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(json.dumps(
         {"submodules": submodules, "exes": exes}, indent=2))
 
 
@@ -416,14 +452,17 @@ def generate_scripts(games=None):
             cwd=str(REPO_DIR), check=True)
 
 
-def run_headless():
+def run_headless(runtime=None):
     _header("Headless Ghidra Import")
+    args = [sys.executable, str(SCRIPTS_DIR / "run_headless.py")]
+    if runtime:
+        args.extend(["--runtime", runtime])
     return subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / "run_headless.py")],
+        args,
         cwd=str(REPO_DIR)).returncode
 
 
-def launch_ghidra():
+def launch_ghidra(runtime):
     _header("Launching Ghidra")
     if sys.platform == "win32":
         launcher = GHIDRA_DIR / "ghidraRun.bat"
@@ -433,7 +472,7 @@ def launch_ghidra():
         print(f"  WARNING: {launcher.name} not found")
         return
 
-    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    project_dir = _runtime_projects_dir(runtime) / GHIDRA_PROJECT_NAME
     gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
 
     lock = project_dir / f"{GHIDRA_PROJECT_NAME}.lock"
@@ -443,6 +482,7 @@ def launch_ghidra():
         except OSError:
             pass
 
+    print(f"  Runtime: {runtime}")
     print(f"  Project: {project_dir.relative_to(REPO_DIR)}/")
     if sys.platform == "win32":
         subprocess.Popen(
@@ -460,14 +500,15 @@ def launch_ghidra():
             stderr=subprocess.DEVNULL)
 
 
-def clean_project():
+def clean_project(runtime):
     _header("Clean Ghidra Project")
-    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    project_dir = _runtime_projects_dir(runtime) / GHIDRA_PROJECT_NAME
     if project_dir.exists():
         shutil.rmtree(project_dir)
         print("  Removed project directory.")
-    if STATE_FILE.is_file():
-        STATE_FILE.unlink()
+    state_file = _runtime_state_file(runtime)
+    if state_file.is_file():
+        state_file.unlink()
         print("  Removed state file.")
     print("  Done. Next import will start fresh.")
 
@@ -476,8 +517,16 @@ def clean_project():
 #  Status display
 # =====================================================================
 
+def _state_is_current(runtime):
+    state = _load_state(runtime)
+    return bool(state) and (
+        state.get("submodules") == _get_submodule_hashes()
+        and state.get("exes") == _get_exe_fingerprints(runtime)
+    )
+
+
 def _print_status():
-    """Print current environment status and return (games, status_lines)."""
+    """Print shared tool status and the independent state of each runtime."""
     print()
     print("=" * 60)
     print("  Bethesda Ghidra Scripts")
@@ -497,26 +546,103 @@ def _print_status():
         print(f"    Steamless   : {'OK' if steamless_ok else 'not installed'}")
     print(f"    Python pkgs : {'OK' if pkgs_ok else 'missing'}")
 
-    # Executables
-    exes = _discover_exes()
-    games = {g for g, _, _ in exes}
+    runtimes = _discover_runtimes()
     print()
-    print("  Executables:")
-    if exes:
-        for game, ver, exe in exes:
-            print(f"    {game}/{ver}: {exe.name}")
-    else:
+    print("  Runtime databases:")
+    if not runtimes:
         print("    (none found)")
+    for runtime in runtimes:
+        exes = _discover_exes(runtime)
+        games = {game for game, _, _ in exes}
+        has_scripts = _scripts_exist(games) if games else False
+        has_project = _project_exists(runtime)
+        state = "current" if _state_is_current(runtime) else "not recorded / changed"
+        print(f"    {runtime}:")
+        for game, variant, exe in exes:
+            print(f"      {game}/{variant}: {exe.name}")
+        print(f"      Import scripts : {'OK' if has_scripts else 'not generated'}")
+        print(f"      Ghidra project : {'OK' if has_project else 'not created'}")
+        print(f"      Import state   : {state}")
+    return runtimes
 
-    # Generated scripts
-    has_scripts = _scripts_exist(games) if games else False
-    has_project = _project_exists()
-    print()
-    print("  Output:")
-    print(f"    Import scripts : {'OK' if has_scripts else 'not generated'}")
-    print(f"    Ghidra project : {'OK' if has_project else 'not created'}")
 
-    return games
+def _select_runtime(prompt="  Runtime (blank for all): ", allow_all=False):
+    runtimes = _discover_runtimes()
+    if not runtimes:
+        print("  No runtime databases found.")
+        return None
+    print("  Available runtimes: " + ", ".join(runtimes))
+    selected = input(prompt).strip()
+    if not selected and allow_all:
+        return None
+    if not selected:
+        if len(runtimes) == 1:
+            return runtimes[0]
+        print("  Select a runtime explicitly.")
+        return None
+    if selected not in runtimes:
+        print(f"  Unknown runtime: {selected}")
+        return None
+    return selected
+
+
+def _save_runtime_state(runtime):
+    _save_state(
+        runtime,
+        _get_submodule_hashes(),
+        _get_exe_fingerprints(runtime),
+    )
+
+
+def _build_runtimes(runtime=None):
+    runtimes = [runtime] if runtime else _discover_runtimes()
+    if not runtimes:
+        print("No runtime executables found.")
+        return 1
+
+    games = _discover_games(runtime)
+    generate_scripts(games)
+    result = 0
+    for name in runtimes:
+        if not _discover_exes(name):
+            continue
+        rc = run_headless(name)
+        if rc == 0:
+            _save_runtime_state(name)
+        else:
+            result = rc
+    return result
+
+
+def _valid_component(value):
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value))
+
+
+def add_runtime(runtime, game, variant, executable):
+    """Copy one executable into its runtime database and import it headlessly."""
+    if not _valid_component(runtime):
+        raise ValueError("Runtime names may contain only letters, numbers, '.', '_' and '-'.")
+    if game not in ("skyrim", "f4"):
+        raise ValueError("Game must be 'skyrim' or 'f4'.")
+    if variant not in ("se", "ae") or (game == "f4" and variant != "ae"):
+        raise ValueError("Variant must be 'se' or 'ae'; Fallout 4 only supports 'ae'.")
+
+    source = Path(executable).expanduser().resolve()
+    if not source.is_file() or source.suffix.lower() != ".exe":
+        raise ValueError(f"Executable does not exist or is not an .exe file: {source}")
+
+    destination = _runtime_exes_dir(runtime) / game / variant / source.name
+    if destination.exists():
+        raise FileExistsError(f"Runtime executable already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    print(f"Added {destination.relative_to(REPO_DIR)}")
+
+    generate_scripts({game})
+    rc = run_headless(runtime)
+    if rc == 0:
+        _save_runtime_state(runtime)
+    return rc
 
 
 # =====================================================================
@@ -527,10 +653,11 @@ MENU_ITEMS = [
     ("1", "Install prerequisites (Python packages, Ghidra, Clang, Steamless)"),
     ("2", "Update CommonLib submodules to latest"),
     ("3", "Generate import scripts"),
-    ("4", "Run headless Ghidra import"),
-    ("5", "Open Ghidra"),
-    ("6", "Full rebuild (generate + import)"),
-    ("7", "Clean Ghidra project (start fresh)"),
+    ("4", "Add runtime executable and import"),
+    ("5", "Run headless Ghidra import (select runtime)"),
+    ("6", "Open a runtime Ghidra project"),
+    ("7", "Full rebuild (select runtime; blank for all)"),
+    ("8", "Clean a runtime Ghidra project"),
     ("q", "Quit"),
 ]
 
@@ -544,7 +671,7 @@ def _show_menu():
 
 
 def _run_menu():
-    games = _print_status()
+    _print_status()
     _show_menu()
 
     while True:
@@ -564,28 +691,45 @@ def _run_menu():
         elif choice == "2":
             update_submodules()
         elif choice == "3":
-            games = _discover_games()
-            generate_scripts(games)
+            generate_scripts()
         elif choice == "4":
-            rc = run_headless()
-            if rc == 0:
-                _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+            runtime = input("  Runtime name (for example 1.7.105.0): ").strip()
+            game = input("  Game (skyrim/f4): ").strip().lower()
+            variant = input("  Variant (se/ae): ").strip().lower()
+            executable = input("  Path to executable: ").strip().strip('"')
+            try:
+                rc = add_runtime(runtime, game, variant, executable)
+                if rc:
+                    print(f"  Import failed with exit code {rc}.")
+            except (FileExistsError, ValueError) as e:
+                print(f"  ERROR: {e}")
         elif choice == "5":
-            launch_ghidra()
-            break
+            runtime = _select_runtime(prompt="  Runtime: ")
+            if runtime:
+                rc = run_headless(runtime)
+                if rc == 0:
+                    _save_runtime_state(runtime)
         elif choice == "6":
-            games = _discover_games()
-            generate_scripts(games)
-            rc = run_headless()
-            if rc == 0:
-                _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+            runtime = _select_runtime(prompt="  Runtime: ")
+            if runtime:
+                launch_ghidra(runtime)
         elif choice == "7":
-            clean_project()
+            runtimes = _discover_runtimes()
+            print("  Available runtimes: " + ", ".join(runtimes))
+            selected = input("  Runtime (blank for all): ").strip()
+            if selected and selected not in runtimes:
+                print(f"  Unknown runtime: {selected}")
+            else:
+                _build_runtimes(selected or None)
+        elif choice == "8":
+            runtime = _select_runtime(prompt="  Runtime: ")
+            if runtime:
+                clean_project(runtime)
         else:
             print("  Invalid choice.")
             continue
 
-        games = _print_status()
+        _print_status()
         _show_menu()
 
 
@@ -600,29 +744,30 @@ def _cmd_setup():
     setup_steamless()
 
 
-def _cmd_build():
-    games = _discover_games()
-    if not games:
-        print("No executables found.")
-        sys.exit(1)
-    generate_scripts(games)
-    rc = run_headless()
-    if rc == 0:
-        _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+def _cmd_build(runtime=None):
+    if runtime:
+        if not _valid_component(runtime):
+            print(f"Invalid runtime name: {runtime}")
+            sys.exit(1)
+        if runtime not in _discover_runtimes():
+            print(f"Unknown runtime: {runtime}")
+            sys.exit(1)
+    rc = _build_runtimes(runtime)
     sys.exit(rc)
 
 
-def _cmd_all():
-    _cmd_setup()
-    games = _discover_games()
-    if not games:
-        print("No executables found.")
+def _cmd_all(runtime=None):
+    runtimes = _discover_runtimes()
+    if runtime and runtime not in runtimes:
+        print(f"Unknown runtime: {runtime}")
         sys.exit(1)
-    generate_scripts(games)
-    rc = run_headless()
+    if not runtimes:
+        print("No runtime executables found.")
+        sys.exit(1)
+    _cmd_setup()
+    rc = _build_runtimes(runtime)
     if rc == 0:
-        _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
-    launch_ghidra()
+        launch_ghidra(runtime or runtimes[0])
     sys.exit(rc)
 
 
@@ -632,13 +777,34 @@ def main():
         _run_menu()
     elif args[0] == "setup":
         _cmd_setup()
+    elif args[0] == "status":
+        _print_status()
     elif args[0] == "build":
-        _cmd_build()
+        if len(args) > 2:
+            print("Usage: python run.py build [runtime]")
+            sys.exit(2)
+        _cmd_build(args[1] if len(args) == 2 else None)
     elif args[0] == "all":
-        _cmd_all()
+        if len(args) > 2:
+            print("Usage: python run.py all [runtime]")
+            sys.exit(2)
+        runtime = args[1] if len(args) == 2 else None
+        if runtime and not _valid_component(runtime):
+            print(f"Invalid runtime name: {runtime}")
+            sys.exit(1)
+        _cmd_all(runtime)
+    elif args[0] == "add":
+        if len(args) != 5:
+            print("Usage: python run.py add <runtime> <skyrim|f4> <se|ae> <executable>")
+            sys.exit(2)
+        try:
+            sys.exit(add_runtime(*args[1:]))
+        except (FileExistsError, ValueError) as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
     else:
         print(f"Unknown command: {args[0]}")
-        print("Usage: python run.py [setup|build|all]")
+        print("Usage: python run.py [setup|status|build [runtime]|all [runtime]|add <runtime> <game> <variant> <exe>]")
         sys.exit(1)
 
 

@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """
-Headless PyGhidra runner — imports each .exe under exes/<game>/<version>/ into
-a single shared Ghidra project and applies the matching CommonLibImport_*.py
-script.
+Headless PyGhidra runner — imports each runtime's executables into its own
+Ghidra project and applies the matching CommonLibImport_*.py script.
 
 Usage:
-  python scripts/run_headless.py                 # run all
-  python scripts/run_headless.py skyrim          # all skyrim versions
-  python scripts/run_headless.py skyrim ae       # specific
-  python scripts/run_headless.py f4 ae
+  python scripts/run_headless.py                 # run every runtime database
+  python scripts/run_headless.py --runtime 1.6.1170.0
 
 Layout:
-  exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
-  exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
-  exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
+  runtimes/1.6.1170.0/exes/skyrim/ae/SkyrimSE.exe
+  runtimes/1.6.1170.0/ghidraprojects/BethesdaGhidraScripts/
 
-All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
+Each runtime database has its own Ghidra project.
 """
+import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,9 +23,8 @@ from pathlib import Path
 
 REPO_DIR       = Path(__file__).parent.parent
 GHIDRA_DIR     = REPO_DIR / "tools" / "ghidra"
-EXES_ROOT      = REPO_DIR / "exes"
+RUNTIMES_DIR   = REPO_DIR / "runtimes"
 SCRIPTS_DIR    = REPO_DIR / "ghidrascripts"
-PROJECTS_DIR   = REPO_DIR / "ghidraprojects"
 STEAMLESS_CLI  = REPO_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
 
 GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
@@ -116,11 +113,21 @@ def script_for(game: str, version: str) -> Path:
     return SCRIPTS_DIR / f"CommonLibImport_{version.upper()}.py"
 
 
-def discover_targets(filter_game=None, filter_ver=None):
+def discover_runtimes():
+    if not RUNTIMES_DIR.is_dir():
+        return []
+    return sorted(
+        path.name for path in RUNTIMES_DIR.iterdir()
+        if path.is_dir() and discover_targets(path.name)
+    )
+
+
+def discover_targets(runtime, filter_game=None, filter_ver=None):
     targets = []
-    if not EXES_ROOT.is_dir():
+    exes_root = RUNTIMES_DIR / runtime / "exes"
+    if not exes_root.is_dir():
         return targets
-    for game_dir in sorted(EXES_ROOT.iterdir()):
+    for game_dir in sorted(exes_root.iterdir()):
         if not game_dir.is_dir():
             continue
         game = game_dir.name
@@ -132,7 +139,10 @@ def discover_targets(filter_game=None, filter_ver=None):
             version = ver_dir.name
             if filter_ver and filter_ver != version:
                 continue
-            exes = sorted(ver_dir.glob("*.exe"))
+            exes = [
+                path for path in sorted(ver_dir.glob("*.exe"))
+                if "unpacked" not in path.name.lower()
+            ]
             if not exes:
                 continue
             targets.append((game, version, exes[0]))
@@ -302,12 +312,26 @@ def _run_one(project, game, version, binary, script_path, monitor):
 
 
 def main():
-    args  = sys.argv[1:]
-    fg    = args[0] if len(args) > 0 else None
-    fv    = args[1] if len(args) > 1 else None
-    targets = discover_targets(fg, fv)
-    if not targets:
-        print(f"No targets found in {EXES_ROOT}")
+    parser = argparse.ArgumentParser(description="Import runtime databases into Ghidra.")
+    parser.add_argument("--runtime", help="Import only this runtime database.")
+    args = parser.parse_args()
+
+    if args.runtime and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*", args.runtime):
+        parser.error("runtime names may contain only letters, numbers, '.', '_' and '-'")
+
+    runtimes = [args.runtime] if args.runtime else discover_runtimes()
+    targets_by_runtime = {
+        runtime: discover_targets(runtime)
+        for runtime in runtimes
+    }
+    targets_by_runtime = {
+        runtime: targets
+        for runtime, targets in targets_by_runtime.items()
+        if targets
+    }
+    if not targets_by_runtime:
+        print(f"No runtime targets found in {RUNTIMES_DIR}")
         sys.exit(1)
 
     os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
@@ -317,45 +341,53 @@ def main():
     from ghidra.util.task import ConsoleTaskMonitor
     monitor = ConsoleTaskMonitor()
 
-    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
-    rep = project_dir / f"{GHIDRA_PROJECT_NAME}.rep"
-    if rep.exists() and not gpr.exists():
-        shutil.rmtree(rep)
-
     failures = []
-    try:
-        with pyghidra.open_project(project_dir, GHIDRA_PROJECT_NAME, create=True) as project:
-            for game, version, binary in targets:
-                print("\n" + "=" * 60)
-                print(f"  {game.upper()} / {version.upper()}: {binary}")
-                print("=" * 60)
-                binary = _ensure_unpacked(binary)
-                script_path = script_for(game, version)
-                if not script_path.is_file():
-                    print(f"SKIP: script not found at {script_path}")
-                    failures.append((game, version, "missing script"))
-                    continue
-                try:
-                    ok = _run_one(project, game, version, binary, script_path, monitor)
-                    if not ok:
-                        failures.append((game, version, "verification failed"))
-                except Exception as e:
-                    print(f"ERROR: {e}")
-                    failures.append((game, version, str(e)))
-    except Exception as e:
-        print(f"ERROR opening project: {e}")
-        sys.exit(1)
+    completed = 0
+    for runtime, targets in targets_by_runtime.items():
+        project_dir = (
+            RUNTIMES_DIR / runtime / "ghidraprojects" / GHIDRA_PROJECT_NAME
+        )
+        project_dir.mkdir(parents=True, exist_ok=True)
+        gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+        rep = project_dir / f"{GHIDRA_PROJECT_NAME}.rep"
+        if rep.exists() and not gpr.exists():
+            shutil.rmtree(rep)
+
+        print(f"\n{'#' * 60}\n  Runtime {runtime}\n{'#' * 60}")
+        try:
+            with pyghidra.open_project(
+                    project_dir, GHIDRA_PROJECT_NAME, create=True) as project:
+                for game, version, binary in targets:
+                    print("\n" + "=" * 60)
+                    print(f"  {game.upper()} / {version.upper()}: {binary}")
+                    print("=" * 60)
+                    binary = _ensure_unpacked(binary)
+                    script_path = script_for(game, version)
+                    if not script_path.is_file():
+                        print(f"SKIP: script not found at {script_path}")
+                        failures.append((runtime, game, version, "missing script"))
+                        continue
+                    try:
+                        ok = _run_one(
+                            project, game, version, binary, script_path, monitor)
+                        completed += 1
+                        if not ok:
+                            failures.append(
+                                (runtime, game, version, "verification failed"))
+                    except Exception as e:
+                        print(f"ERROR: {e}")
+                        failures.append((runtime, game, version, str(e)))
+        except Exception as e:
+            print(f"ERROR opening {runtime} project: {e}")
+            failures.append((runtime, "project", "-", str(e)))
 
     print("\n" + "=" * 60)
     if failures:
         print("FAILURES:")
-        for g, v, msg in failures:
-            print(f"  {g}/{v}: {msg}")
+        for runtime, game, version, msg in failures:
+            print(f"  {runtime} {game}/{version}: {msg}")
         sys.exit(1)
-    print(f"All {len(targets)} headless run(s) passed.")
+    print(f"All {completed} headless run(s) passed.")
 
 
 if __name__ == "__main__":

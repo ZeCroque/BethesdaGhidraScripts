@@ -8,19 +8,11 @@ signatures, and address-library symbols into Ghidra for Bethesda game binaries.
 1. Clone the repo:
 
 ```bash
-git clone https://github.com/doodlum/BethesdaGhidraScripts.git
+git clone https://github.com/ZeCroque/BethesdaGhidraScripts.git
 cd BethesdaGhidraScripts
 ```
 
-2. Drop your game executables into the matching folders (any combination):
-
-```
-exes/skyrim/se/SkyrimSE.exe      Skyrim SE  (1.5.97)
-exes/skyrim/ae/SkyrimSE.exe      Skyrim AE  (1.6.1170+)
-exes/f4/ae/Fallout4.exe          Fallout 4  (1.11.191)
-```
-
-3. Run:
+2. Run the interactive status/menu:
 
 ```bash
 python run.py
@@ -34,28 +26,30 @@ This opens an interactive menu:
 ============================================================
 
   Tools:
-    Ghidra      : 12.0.4
-    Clang       : clang version 22.1.4
+    Ghidra      : 12.1.4
+    Clang       : clang version 23.1.3
     Steamless   : OK
     Python pkgs : OK
 
-  Executables:
-    f4/ae: Fallout4.exe
-    skyrim/ae: SkyrimSE.exe
-    skyrim/se: SkyrimSE.exe
-
-  Output:
-    Import scripts : OK
-    Ghidra project : OK
+  Runtime databases:
+    x.x.x.x:
+      skyrim/se: SkyrimSE.exe
+      Ghidra project : OK
+      Import state   : current
+    x.x.x.x:
+      skyrim/ae: SkyrimSE.exe
+      Ghidra project : OK
+      Import state   : current
 
 ----------------------------------------
   1) Install prerequisites
   2) Update CommonLib submodules to latest
   3) Generate import scripts
-  4) Run headless Ghidra import
-  5) Open Ghidra
-  6) Full rebuild (generate + import)
-  7) Clean Ghidra project (start fresh)
+  4) Add runtime executable and import
+  5) Run headless Ghidra import (select runtime)
+  6) Open a runtime Ghidra project
+  7) Full rebuild (select runtime; blank for all)
+  8) Clean a runtime Ghidra project
   q) Quit
 ----------------------------------------
 ```
@@ -66,31 +60,35 @@ The status panel at the top shows what's installed and detected. Menu options:
 |--------|-------------|
 | **1** | Installs Python packages (`pdbparse`, `pyghidra`), downloads Ghidra, LLVM/Clang, and Steamless if missing. Safe to run multiple times -- skips anything already installed. |
 | **2** | Runs `git submodule update --init --recursive --remote` to pull the latest CommonLib and AddressLibraryDatabase commits. Run this when upstream CommonLib has new types or fixes. |
-| **3** | Parses CommonLib headers with clang and generates the Ghidra import scripts under `ghidrascripts/`. Requires clang (option 1 installs it). The executable version is auto-detected to select the correct address library. |
-| **4** | Runs the generated import scripts against your executables in headless Ghidra. Creates or updates the Ghidra project with all types, symbols, and signatures. Steam DRM is stripped automatically via Steamless. |
-| **5** | Opens Ghidra with the project loaded. |
-| **6** | Runs options 3 + 4 back-to-back. Use this after updating submodules or replacing an executable. |
-| **7** | Deletes the Ghidra project and state file so the next import starts from scratch. |
+| **3** | Parses CommonLib headers with clang and generates shared import scripts under `ghidrascripts/`. |
+| **4** | Prompts for a runtime name, game, variant, and executable path; copies the executable, generates the needed script, and runs the headless import. |
+| **5** | Imports one selected runtime into its own Ghidra project. Steam DRM is stripped automatically via Steamless. |
+| **6** | Opens the selected runtime's Ghidra project. |
+| **7** | Regenerates scripts and imports one runtime, or all runtimes when left blank. |
+| **8** | Deletes only the selected runtime's Ghidra project and import state. |
 
-**First-time setup:** run **1**, then **2**, then **6** (or just **6** if you
-already have clang installed). After that, **5** opens Ghidra with everything
-imported.
+**First-time setup:** run **1**, then **2**, then add each runtime (option **4**
+or the `add` command). Each addition is imported immediately. Use **6** to open
+the selected runtime project.
 
 ### Non-interactive mode
 
 For CI or scripting, pass a subcommand instead of using the menu:
 
 ```bash
-python run.py setup   # option 1 + 2: install tools and update submodules
-python run.py build   # option 6: generate scripts + headless import
-python run.py all     # setup + build + open Ghidra
+python run.py setup
+python run.py status
+python run.py build                 # rebuild every runtime
+python run.py build 1.6.1170.0      # rebuild one runtime
+python run.py add 1.7.104.0 skyrim ae "D:\Games\SkyrimSE.exe"
+python run.py all 1.6.1170.0       # setup, rebuild, and open one project
 ```
 
 ### How it works
 
-All binaries end up in a single Ghidra project at
-`ghidraprojects/BethesdaGhidraScripts/`, organized into `/<game>/<version>/`
-folders.
+Shared dependencies and generated import scripts are stored once. Each runtime
+has its own executable directory, import state file, and Ghidra project at
+`runtimes/<runtime>/ghidraprojects/BethesdaGhidraScripts/`.
 
 The address library for each executable is selected automatically based on
 the detected PE version. For Skyrim AE, all versions from 1.6.317 to 1.6.1179
@@ -110,12 +108,12 @@ first run.
 
 | Game         | Folder           | Address library  | CommonLib                 |
 |--------------|------------------|------------------|---------------------------|
-| Skyrim SE    | `exes/skyrim/se` | `1-5-97-0`       | `powerof3/CommonLibSSE`   |
-| Skyrim AE    | `exes/skyrim/ae` | auto-detected     | `powerof3/CommonLibSSE`   |
-| Fallout 4 AE | `exes/f4/ae`    | `1-11-191-0`     | `libxse/commonlibf4`      |
+| Skyrim SE    | `runtimes/<runtime>/exes/skyrim/se` | `1-5-97-0` | `alandtse/CommonLibNG` |
+| Skyrim AE    | `runtimes/<runtime>/exes/skyrim/ae` | auto-detected | `alandtse/CommonLibNG` |
+| Fallout 4 AE | `runtimes/<runtime>/exes/f4/ae` | `1-11-191-0` | `libxse/commonlibf4` |
 
-You don't need all three. The script detects which executables are present and
-only generates and runs what's needed.
+Address-library selection is detected from each executable. Runtime databases
+are imported and tracked independently.
 
 ---
 
@@ -161,9 +159,7 @@ python scripts/commonlibf4/parse_commonlib_types.py    # Fallout 4 AE
 
 # Run headless Ghidra import (requires generated scripts + Ghidra)
 python scripts/run_headless.py                # all targets
-python scripts/run_headless.py skyrim         # all skyrim versions
-python scripts/run_headless.py skyrim ae      # specific target
-python scripts/run_headless.py f4 ae
+python scripts/run_headless.py --runtime 1.6.1170.0
 ```
 
 ### Symbol priority
@@ -186,14 +182,18 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 ├── extern/                          CommonLib submodules (auto-updated)
 ├── addresslibrary/                  Address library .bin files
 ├── extras/                          Fallback symbol sources (PDB, IDA)
-├── exes/                            Game executables (you provide these)
+├── runtimes/                        Independent runtime databases
+│   ├── 1.5.97.0/
+│   │   ├── exes/                    Executable(s) for this runtime
+│   │   ├── ghidraprojects/          Analyzed Ghidra project
+│   │   └── .last_run_state          Import state for this runtime
+│   └── 1.6.1170.0/
 ├── scripts/                         Pipeline source code
 │   ├── run_headless.py              Headless Ghidra runner
 │   ├── core/                        Shared: clang parser, script emitter
 │   ├── commonlibsse/                Skyrim SE/AE pipeline
 │   └── commonlibf4/                 Fallout 4 AE pipeline
 ├── ghidrascripts/                   Generated import scripts (output)
-├── ghidraprojects/                  Ghidra project (output)
 └── tools/                           Ghidra, Steamless, LLVM (auto-downloaded)
 ```
 

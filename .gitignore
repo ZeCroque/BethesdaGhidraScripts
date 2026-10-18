@@ -1,6 +1,7 @@
 /ghidrascripts
 /exes
 __pycache__
-/ghidraprojects
+/runtimes/*/exes/
+/runtimes/*/ghidraprojects/
 /tools
 .last_run_state
