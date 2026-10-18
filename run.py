@@ -638,7 +638,6 @@ def add_runtime(runtime, game, variant, executable):
     shutil.copy2(source, destination)
     print(f"Added {destination.relative_to(REPO_DIR)}")
 
-    generate_scripts({game})
     rc = run_headless(runtime)
     if rc == 0:
         _save_runtime_state(runtime)

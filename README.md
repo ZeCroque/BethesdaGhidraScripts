@@ -60,16 +60,17 @@ The status panel at the top shows what's installed and detected. Menu options:
 |--------|-------------|
 | **1** | Installs Python packages (`pdbparse`, `pyghidra`), downloads Ghidra, LLVM/Clang, and Steamless if missing. Safe to run multiple times -- skips anything already installed. |
 | **2** | Runs `git submodule update --init --recursive --remote` to pull the latest CommonLib and AddressLibraryDatabase commits. Run this when upstream CommonLib has new types or fixes. |
-| **3** | Parses CommonLib headers with clang and generates shared import scripts under `ghidrascripts/`. |
-| **4** | Prompts for a runtime name, game, variant, and executable path; copies the executable, generates the needed script, and runs the headless import. |
+| **3** | Parses CommonLib headers with clang and generates shared import scripts under `ghidrascripts/`. Generate them once before importing runtimes; rerun only when the generated scripts need updating. |
+| **4** | Prompts for a runtime name, game, variant, and executable path; copies the executable and runs the headless import using the existing shared scripts. |
 | **5** | Imports one selected runtime into its own Ghidra project. Steam DRM is stripped automatically via Steamless. |
 | **6** | Opens the selected runtime's Ghidra project. |
 | **7** | Regenerates scripts and imports one runtime, or all runtimes when left blank. |
 | **8** | Deletes only the selected runtime's Ghidra project and import state. |
 
-**First-time setup:** run **1**, then **2**, then add each runtime (option **4**
-or the `add` command). Each addition is imported immediately. Use **6** to open
-the selected runtime project.
+**First-time setup:** run **1**, then **2**, generate the import scripts with
+**3**, and then add each runtime with **4** (or the `add` command). Each
+addition is imported immediately without regenerating scripts. Use **6** to
+open the selected runtime project.
 
 ### Non-interactive mode
 
