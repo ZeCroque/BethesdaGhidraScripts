@@ -488,8 +488,8 @@ def analyze_runtime(runtime, game, variant):
         print(f"ERROR: Ghidra headless launcher not found: {launcher}")
         return 1
 
-    project_location = _runtime_projects_dir(runtime)
-    project_dir = project_location / GHIDRA_PROJECT_NAME
+    project_dir = _runtime_projects_dir(runtime) / GHIDRA_PROJECT_NAME
+    project_location = project_dir
     gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
     if not gpr.is_file():
         print(f"ERROR: Ghidra project not found: {gpr}")
