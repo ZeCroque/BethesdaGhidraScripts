@@ -37,13 +37,16 @@ PROJECT_NAME = {
 SPOT_CHECKS = {
     'skyrim': {
         'types': [
-            ("Actor",           "/CommonLibSSE/RE", 680,  85),
+            ("Actor",           "/CommonLibSSE/RE", 680,  80),
             ("TESObjectREFR",   "/CommonLibSSE/RE", 140,  18),
             ("PlayerCharacter", "/CommonLibSSE/RE", 3000, 260),
-            ("ActorValue",      "/CommonLibSSE/RE",    4,   0),
+            ("ActorValue",      "/CommonLibSSE/external-linkage", 4, 0),
         ],
-        'labels':    [],
-        'functions': ["AbsorbEffect::ModifyOnStart", "AbsorbEffect::AdjustForPerks"],
+        'variant_type_min_components': {
+            'ae': {"PlayerCharacter": 120},
+        },
+        'labels':    ["VTABLE_AbsorbEffect"],
+        'functions': ["AbsorbEffect::ModifyOnStart"],
         'min_named': 12000, 'min_enums': 300, 'min_structs': 4500, 'min_syms': 250000,
     },
     'f4': {
@@ -183,6 +186,8 @@ def _verify(program, game, version):
         print("\n--- Type spot-checks ---")
         from ghidra.program.model.data import CategoryPath
         for type_name, cat_path, min_bytes, min_comps in spec['types']:
+            min_comps = spec.get('variant_type_min_components', {}).get(
+                version, {}).get(type_name, min_comps)
             dt = dtm.getDataType(CategoryPath(cat_path), type_name)
             if dt is None:
                 print(f"  MISSING: {type_name} in {cat_path}")

@@ -74,11 +74,15 @@ def load_ae_rename_db(file_path, ae_db):
 
 VERSIONS = {
     'se': {
-        'defines':     [],
+        'defines':     ['-DENABLE_SKYRIM_SE'],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_SE.py'),
     },
     'ae': {
-        'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
+        'defines':     [
+            '-DENABLE_SKYRIM_AE',
+            '-DSKYRIM_AE',
+            '-DSKYRIM_SUPPORT_AE',
+        ],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE.py'),
     },
 }

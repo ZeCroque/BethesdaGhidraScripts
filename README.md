@@ -138,6 +138,11 @@ Every emitted struct field and signature parameter uses the **exact** type from
 the source. Anything that can't be pinned to an exact type is left as `void *`
 rather than guessed. In practice ~99.75% of struct fields are fully typed.
 
+Skyrim AE's `PlayerCharacter` intentionally has fewer named components than SE:
+CommonLibNG represents its runtime-dependent data block as opaque padding on
+AE, while retaining the asserted AE size. The headless verification uses a
+variant-specific component threshold for this type.
+
 | | F4 AE | Skyrim AE | Skyrim SE |
 | --- | --- | --- | --- |
 | Struct fields | 24,216 | 34,243 | 34,231 |

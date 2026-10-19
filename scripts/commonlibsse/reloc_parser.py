@@ -37,15 +37,47 @@ _RELOC_VAR_RE = re.compile(
     r'(?:static\s+)?(?:const\s+)?REL::Relocation<[^>]+>\s+(\w+)\s*[\{(]'
 )
 
-# RTTI label: inline constexpr REL::ID RTTI_Name{ id };
+# RTTI labels in legacy REL::ID and current REL::VariantID formats.
 _RTTI_RE = re.compile(
-    r'inline\s+constexpr\s+REL::ID\s+(RTTI_\w+)\s*\{\s*(\d+)\s*\}'
+    r'(?:inline\s+)?constexpr\s+'
+    r'(?:REL::ID\s+(?P<id_name>RTTI_\w+)\s*\{\s*(?P<id>\d+)\s*\}'
+    r'|REL::VariantID\s+(?P<variant_name>RTTI_\w+)\s*\(\s*'
+    r'(?P<se_id>\d+)\s*,\s*(?P<ae_id>\d+)\s*,\s*'
+    r'(?:0[xX][0-9A-Fa-f]+|\d+)\s*\))'
 )
 
-# VTABLE label: inline constexpr std::array<REL::ID, N> VTABLE_Name{ REL::ID(x), ... };
+# VTABLE labels in legacy REL::ID and current REL::VariantID formats.
 _VTABLE_RE = re.compile(
-    r'inline\s+constexpr\s+std::array<REL::ID,\s*(\d+)>\s+(VTABLE_\w+)\s*\{([^}]+)\}'
+    r'(?:inline\s+)?constexpr\s+std::array<REL::(?:ID|VariantID),\s*'
+    r'(\d+)>\s+(VTABLE_\w+)\s*\{([^}]+)\}'
 )
+
+_VTABLE_ID_RE = re.compile(
+    r'REL::VariantID\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*'
+    r'(?:0[xX][0-9A-Fa-f]+|\d+)\s*\)|'
+    r'REL::ID\s*\(\s*(\d+)\s*\)'
+)
+
+
+def _rtti_name(match):
+    return match.group('id_name') or match.group('variant_name')
+
+
+def _rtti_id(match, version):
+    variant_id = match.group('se_id' if version == 'se' else 'ae_id')
+    if variant_id is not None:
+        return int(variant_id)
+    return int(match.group('id'))
+
+
+def _vtable_ids(body, version):
+    id_index = 0 if version == 'se' else 1
+    ids = []
+    for match in _VTABLE_ID_RE.finditer(body):
+        variant_id = match.group(id_index + 1)
+        legacy_id = match.group(3)
+        ids.append(int(variant_id if variant_id is not None else legacy_id))
+    return ids
 
 # Offset namespace: inline constexpr REL::ID Name(static_cast<...>(id));
 _OFFSET_ID_RE = re.compile(
@@ -492,22 +524,22 @@ def _scan_rtti_vtable_file(
         se_text = '\n'.join(se_chunk)
 
         for m in _RTTI_RE.finditer(ae_text):
-            name = m.group(1)
-            off = addr_lib.ae_db.get(int(m.group(2)))
+            name = _rtti_name(m)
+            off = addr_lib.ae_db.get(_rtti_id(m, 'ae'))
             if off:
                 labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
                 labels[name]['ae_off'] = off
 
         for m in _RTTI_RE.finditer(se_text):
-            name = m.group(1)
-            off = addr_lib.se_db.get(int(m.group(2)))
+            name = _rtti_name(m)
+            off = addr_lib.se_db.get(_rtti_id(m, 'se'))
             if off:
                 labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
                 labels[name]['se_off'] = off
 
         for m in _VTABLE_RE.finditer(ae_text):
             base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
+            ids = _vtable_ids(m.group(3), 'ae')
             for idx, id_ in enumerate(ids):
                 off = addr_lib.ae_db.get(id_)
                 if not off:
@@ -518,7 +550,7 @@ def _scan_rtti_vtable_file(
 
         for m in _VTABLE_RE.finditer(se_text):
             base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
+            ids = _vtable_ids(m.group(3), 'se')
             for idx, id_ in enumerate(ids):
                 off = addr_lib.se_db.get(id_)
                 if not off:
@@ -528,22 +560,40 @@ def _scan_rtti_vtable_file(
                 labels[lname]['se_off'] = off
     else:
         for m in _RTTI_RE.finditer(content):
-            name = m.group(1)
-            off = addr_lib.se_db.get(int(m.group(2)))
-            if off:
-                labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
-                labels[name]['se_off'] = off
+            name = _rtti_name(m)
+            se_id = m.group('se_id')
+            ae_id = m.group('ae_id')
+            if se_id is not None and ae_id is not None:
+                se_off = addr_lib.se_db.get(int(se_id))
+                ae_off = addr_lib.ae_db.get(int(ae_id))
+                if se_off or ae_off:
+                    entry = labels.setdefault(
+                        name, {'name': name, 'se_off': None, 'ae_off': None})
+                    entry['se_off'] = se_off
+                    entry['ae_off'] = ae_off
+            else:
+                off = addr_lib.se_db.get(_rtti_id(m, 'se'))
+                if off:
+                    labels.setdefault(
+                        name, {'name': name, 'se_off': None, 'ae_off': None})
+                    labels[name]['se_off'] = off
 
         for m in _VTABLE_RE.finditer(content):
             base_name = m.group(2)
-            ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
-            for idx, id_ in enumerate(ids):
-                off = addr_lib.se_db.get(id_)
-                if not off:
-                    continue
+            se_ids = _vtable_ids(m.group(3), 'se')
+            ae_ids = _vtable_ids(m.group(3), 'ae')
+            for idx in range(max(len(se_ids), len(ae_ids))):
                 lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None, 'ae_off': None})
-                labels[lname]['se_off'] = off
+                se_off = addr_lib.se_db.get(se_ids[idx]) if idx < len(se_ids) else None
+                ae_off = addr_lib.ae_db.get(ae_ids[idx]) if idx < len(ae_ids) else None
+                if not se_off and not ae_off:
+                    continue
+                entry = labels.setdefault(
+                    lname, {'name': lname, 'se_off': None, 'ae_off': None})
+                if se_off:
+                    entry['se_off'] = se_off
+                if ae_off:
+                    entry['ae_off'] = ae_off
 
     return list(labels.values())
 

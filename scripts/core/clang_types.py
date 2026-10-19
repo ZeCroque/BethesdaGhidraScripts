@@ -465,7 +465,21 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
         loc = m.group(1).replace('\\', '/')
         return any(p in loc for p in scope_paths)
 
-    for line in text.splitlines():
+    lines = text.splitlines()
+    method_lines_with_overrides = set()
+    method_stack = []
+    for line_index, line in enumerate(lines):
+        node_depth, node_content = _parse_line(line)
+        if node_content is None:
+            continue
+        while method_stack and method_stack[-1][0] >= node_depth:
+            method_stack.pop()
+        if node_content.startswith('CXXMethodDecl '):
+            method_stack.append((node_depth, line_index))
+        elif node_content.startswith('Overrides:') and method_stack:
+            method_lines_with_overrides.add(method_stack[-1][1])
+
+    for line_index, line in enumerate(lines):
         depth, content = _parse_line(line)
         if content is None:
             continue
@@ -584,7 +598,8 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
             continue
 
         # CXXRecordDecl (class/struct definition)
-        if content.startswith('CXXRecordDecl ') and content.endswith('definition'):
+        if (content.startswith('CXXRecordDecl ')
+                and re.search(r'\b(?:class|struct)\s+\w+\s+definition\b', content)):
             m = re.search(r'(?:class|struct)\s+(\w+)\s+definition', content)
             if m:
                 class_name = m.group(1)
@@ -622,7 +637,8 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
 
         # Method declarations (virtual and non-virtual)
         if content.startswith('CXXMethodDecl '):
-            is_virtual = ' virtual' in content
+            is_virtual = (' virtual' in content
+                           or line_index in method_lines_with_overrides)
             m = re.search(r"(operator\(\)|operator\w*|\w+)\s+'([^']+)'", content)
             if m:
                 method_name = m.group(1)
@@ -1170,6 +1186,55 @@ def _compute_vfuncs(structs, root_ns='RE'):
             for i, mname in enumerate(intro)
         ]
         count += 1
+
+    slot_maps = {}
+
+    def get_slot_map(full_name, depth=0):
+        if depth > 30 or full_name in slot_maps:
+            return slot_maps.get(full_name, {})
+        st = structs.get(full_name)
+        if not st:
+            return {}
+        slot_maps[full_name] = {}
+        slots = {}
+        for base_name in st.get('bases', []):
+            bs = resolve(base_name)
+            if bs:
+                slots.update(get_slot_map(bs['full_name'], depth + 1))
+            break
+
+        if st.get('_vfuncs_from_dump'):
+            own_vfuncs = list(st.get('vfuncs', []))
+        else:
+            aliases = st.get('_overload_aliases', {})
+            own_vfuncs = []
+            for method_name in st.get('vmethods', {}):
+                display_name = aliases.get(method_name, method_name)
+                inherited = [
+                    offset for offset, slot_name in slots.items()
+                    if slot_name == method_name or slot_name == display_name
+                ]
+                if inherited and '__overload_' not in method_name:
+                    offset = inherited[0]
+                else:
+                    offset = max(slots.keys(), default=-8) + 8
+                    while offset in slots:
+                        offset += 8
+                slots[offset] = display_name
+                own_vfuncs.append((display_name, offset))
+            st['vfuncs'] = own_vfuncs
+
+        for method_name, offset in own_vfuncs:
+            slots[offset] = method_name
+        slot_maps[full_name] = slots
+        return slots
+
+    count = 0
+    for st in structs.values():
+        if st.get('has_vtable'):
+            get_slot_map(st['full_name'])
+            if st.get('vfuncs') and not st.get('_vfuncs_from_dump'):
+                count += 1
 
     print('Computed vtable slots for {} structs from AST'.format(count))
 
