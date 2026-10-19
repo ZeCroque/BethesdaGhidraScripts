@@ -462,6 +462,61 @@ def run_headless(runtime=None):
         cwd=str(REPO_DIR)).returncode
 
 
+def analyze_runtime(runtime, game, variant):
+    """Run Ghidra auto-analysis on an executable already imported in a project."""
+    if not _valid_component(runtime):
+        print(f"Invalid runtime name: {runtime}")
+        return 1
+    if game not in ("skyrim", "f4"):
+        print("Game must be 'skyrim' or 'f4'.")
+        return 1
+    if variant not in ("se", "ae") or (game == "f4" and variant != "ae"):
+        print("Variant must be 'se' or 'ae'; Fallout 4 only supports 'ae'.")
+        return 1
+
+    target = next(
+        (exe for target_game, target_variant, exe in _discover_exes(runtime)
+         if target_game == game and target_variant == variant),
+        None)
+    if target is None:
+        print(f"No executable found for {runtime} {game}/{variant}.")
+        return 1
+
+    launcher_name = "analyzeHeadless.bat" if sys.platform == "win32" else "analyzeHeadless"
+    launcher = GHIDRA_DIR / "support" / launcher_name
+    if not launcher.is_file():
+        print(f"ERROR: Ghidra headless launcher not found: {launcher}")
+        return 1
+
+    project_location = _runtime_projects_dir(runtime)
+    project_dir = project_location / GHIDRA_PROJECT_NAME
+    gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+    if not gpr.is_file():
+        print(f"ERROR: Ghidra project not found: {gpr}")
+        print("Run the headless import for this runtime before analysis.")
+        return 1
+
+    lock = project_dir / f"{GHIDRA_PROJECT_NAME}.lock"
+    if lock.exists():
+        print(f"ERROR: project lock exists: {lock}")
+        print("Close any Ghidra window using this project, then retry.")
+        return 1
+
+    project_folder = f"{GHIDRA_PROJECT_NAME}/{game}/{variant}"
+    args = [
+        str(launcher),
+        str(project_location),
+        project_folder,
+        "-process",
+        target.name,
+    ]
+    _header("Ghidra Headless Analysis")
+    print(f"  Runtime: {runtime} ({game}/{variant})")
+    print(f"  Executable: {target}")
+    print("  Auto-analysis is enabled; this may take a long time.")
+    return subprocess.run(args, cwd=str(GHIDRA_DIR)).returncode
+
+
 def launch_ghidra(runtime):
     _header("Launching Ghidra")
     if sys.platform == "win32":
@@ -470,17 +525,20 @@ def launch_ghidra(runtime):
         launcher = GHIDRA_DIR / "ghidraRun"
     if not launcher.is_file():
         print(f"  WARNING: {launcher.name} not found")
-        return
+        return False
 
     project_dir = _runtime_projects_dir(runtime) / GHIDRA_PROJECT_NAME
     gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+    if not gpr.is_file():
+        print(f"  ERROR: Ghidra project not found: {gpr}")
+        print("  Run the headless import for this runtime first.")
+        return False
 
     lock = project_dir / f"{GHIDRA_PROJECT_NAME}.lock"
     if lock.exists():
-        try:
-            lock.unlink()
-        except OSError:
-            pass
+        print(f"  ERROR: project lock exists: {lock}")
+        print("  Close any Ghidra window using this project, then try again.")
+        return False
 
     print(f"  Runtime: {runtime}")
     print(f"  Project: {project_dir.relative_to(REPO_DIR)}/")
@@ -498,6 +556,7 @@ def launch_ghidra(runtime):
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
+    return True
 
 
 def clean_project(runtime):
@@ -657,6 +716,7 @@ MENU_ITEMS = [
     ("6", "Open a runtime Ghidra project"),
     ("7", "Full rebuild (select runtime; blank for all)"),
     ("8", "Clean a runtime Ghidra project"),
+    ("9", "Run headless Ghidra analysis on an imported executable"),
     ("q", "Quit"),
 ]
 
@@ -724,6 +784,23 @@ def _run_menu():
             runtime = _select_runtime(prompt="  Runtime: ")
             if runtime:
                 clean_project(runtime)
+        elif choice == "9":
+            runtime = _select_runtime(prompt="  Runtime: ")
+            if runtime:
+                targets = _discover_exes(runtime)
+                if not targets:
+                    print(f"  No runtime executables found for {runtime}.")
+                else:
+                    for index, (game, variant, executable) in enumerate(targets, start=1):
+                        print(f"    {index}) {game}/{variant}: {executable.name}")
+                    selected = input("  Executable number: ").strip()
+                    if selected.isdigit() and 1 <= int(selected) <= len(targets):
+                        game, variant, _ = targets[int(selected) - 1]
+                        rc = analyze_runtime(runtime, game, variant)
+                        if rc:
+                            print(f"  Analysis failed with exit code {rc}.")
+                    else:
+                        print("  Invalid executable selection.")
         else:
             print("  Invalid choice.")
             continue
@@ -801,9 +878,14 @@ def main():
         except (FileExistsError, ValueError) as e:
             print(f"ERROR: {e}")
             sys.exit(1)
+    elif args[0] == "analyze":
+        if len(args) != 4:
+            print("Usage: python run.py analyze <runtime> <skyrim|f4> <se|ae>")
+            sys.exit(2)
+        sys.exit(analyze_runtime(*args[1:]))
     else:
         print(f"Unknown command: {args[0]}")
-        print("Usage: python run.py [setup|status|build [runtime]|all [runtime]|add <runtime> <game> <variant> <exe>]")
+        print("Usage: python run.py [setup|status|build [runtime]|all [runtime]|add <runtime> <game> <variant> <exe>|analyze <runtime> <game> <variant>]")
         sys.exit(1)
 
 

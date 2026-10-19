@@ -50,6 +50,7 @@ This opens an interactive menu:
   6) Open a runtime Ghidra project
   7) Full rebuild (select runtime; blank for all)
   8) Clean a runtime Ghidra project
+  9) Run headless Ghidra analysis on an imported executable
   q) Quit
 ----------------------------------------
 ```
@@ -66,11 +67,13 @@ The status panel at the top shows what's installed and detected. Menu options:
 | **6** | Opens the selected runtime's Ghidra project. |
 | **7** | Regenerates scripts and imports one runtime, or all runtimes when left blank. |
 | **8** | Deletes only the selected runtime's Ghidra project and import state. |
+| **9** | Runs Ghidra's headless auto-analysis on an executable already imported into a runtime project, saving the analyzed program in that project. |
 
 **First-time setup:** run **1**, then **2**, generate the import scripts with
 **3**, and then add each runtime with **4** (or the `add` command). Each
 addition is imported immediately without regenerating scripts. Use **6** to
-open the selected runtime project.
+open the selected runtime project. Use **9** or the `analyze` command to run
+headless auto-analysis and save the result in that runtime's project.
 
 ### Non-interactive mode
 
@@ -83,7 +86,14 @@ python run.py build                 # rebuild every runtime
 python run.py build 1.6.1170.0      # rebuild one runtime
 python run.py add 1.7.104.0 skyrim ae "D:\Games\SkyrimSE.exe"
 python run.py all 1.6.1170.0       # setup, rebuild, and open one project
+python run.py analyze 1.6.1170.0 skyrim ae  # headless analysis, saved to project
 ```
+
+`analyze` runs Ghidra's `analyzeHeadless` against the selected program already
+in the runtime's project. It does not import a new executable or apply the
+CommonLib import script; run the headless import first. Auto-analysis is enabled
+and can take a long time. Close any Ghidra window using that project before
+starting it.
 
 ### How it works
 
