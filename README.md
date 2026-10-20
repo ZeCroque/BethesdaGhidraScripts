@@ -190,6 +190,38 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 6. PDB public symbols (`SkyrimSE.pdb`) -- Skyrim
 7. IDA names (`IDAImportNames_1.11.191.0.py`) -- Fallout 4 AE
 
+### Porting Address Library IDs between runtimes
+
+CommonLib code such as `REL::ID(36540).address() + 0x62D` only works on the
+runtime the ID was found for. When a new executable shifts too much, use
+`scripts/idport.py` (needs `capstone` and `pefile`, installed by `python run.py setup`)
+to translate it using the executables in `runtimes/` and the `.bin` files in
+`addresslibrary/sse`:
+
+```bash
+# What is this ID (+/- offset) really? Prints the canonical REL::ID form + disassembly
+python scripts/idport.py resolve 1.5.97.0 36541-0x63
+# Same, from a raw RVA (image base is stripped if present)
+python scripts/idport.py addr 1.5.97.0 0x5e869d
+# Port it to another runtime
+python scripts/idport.py port 1.5.97.0 36540+0x62D 1.7.104.0
+```
+
+`SPEC` is `ID`, `ID+OFFSET` or `ID-OFFSET`. The offset is applied to the address
+the ID resolves to, then normalised to the containing function and *its* ID, so
+oddities like `REL::ID(36541).address() - 0x63` come out as `REL::ID(36540) + 0x62D`.
+
+`port` tries, in order: exact function signature (relative operands masked), loose
+signature, prefix signature, **callee anchors** (small callees are ported by
+signature, then the new function calling the most of them wins) and finally a weak
+fuzzy mnemonic similarity (`--no-fuzzy` to skip; its index is cached in
+`runtimes/<runtime>/.idport_index.pkl`). The hooked instruction is then mapped across
+by aligning both instruction streams, and both disassemblies are printed.
+**Always compare them by eye** - and re-check things a port cannot see: register
+allocation, what the hooked instruction's neighbours consume (flags, `al`), and
+struct offsets that changed between runtimes. Run `port` again on the hooked callee
+(`port 1.5.97.0 38357 1.7.104.0`) to translate the IDs of called functions.
+
 ### Project layout
 
 ```
@@ -206,6 +238,7 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 │   └── 1.6.1170.0/
 ├── scripts/                         Pipeline source code
 │   ├── run_headless.py              Headless Ghidra runner
+│   ├── idport.py                    Address Library ID porting between runtimes
 │   ├── core/                        Shared: clang parser, script emitter
 │   ├── commonlibsse/                Skyrim SE/AE pipeline
 │   └── commonlibf4/                 Fallout 4 AE pipeline

@@ -5,3 +5,5 @@ __pycache__
 /runtimes/*/ghidraprojects/
 /tools
 .last_run_state
+.idport_index.pkl
+input/

@@ -41,7 +41,7 @@ GHIDRA_RELEASES_URL    = "https://api.github.com/repos/NationalSecurityAgency/gh
 STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases/latest"
 LLVM_RELEASES_URL      = "https://api.github.com/repos/llvm/llvm-project/releases/latest"
 
-REQUIRED_PACKAGES = {"pdbparse": "pdbparse", "pyghidra": "pyghidra"}
+REQUIRED_PACKAGES = {"pdbparse": "pdbparse", "pyghidra": "pyghidra", "capstone": "capstone", "pefile": "pefile"}
 
 API_HEADERS = {
     "Accept": "application/vnd.github.v3+json",
